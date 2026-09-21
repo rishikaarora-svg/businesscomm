@@ -1,0 +1,13 @@
+{
+  "name": "stride-comm-activity",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Read the Room — a Verbal & Non-Verbal Business Communication classroom activity — Stride School of Business",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

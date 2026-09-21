@@ -1,5 +1,6 @@
 /*
- * Verbal & Non-Verbal Business Communication — Stride School of Business
+ * Read the Room — Verbal & Non-Verbal Business Communication
+ * Stride School of Business
  *
  * Plain HTML/CSS/JS, no build step, no framework. Open index.html in a
  * browser and it runs. This was ported out of a constrained templating
@@ -8,9 +9,9 @@
  *
  * Architecture, so you can find your way around:
  *  - DATA / LOGIC (top of file): the situation library, the non-verbal
- *    scoring model, the rule-based "communication check" analysis, the
- *    suggested-rewrite and persona builders. All pure functions — no DOM
- *    access — so they're easy to unit test if you want to add tests.
+ *    scoring model, the rule-based "communication check" analysis, and the
+ *    suggested-rewrite builder. All pure functions — no DOM access — so
+ *    they're easy to unit test if you want to add tests.
  *  - STATE: one plain object (`state`), mutated by the action functions.
  *  - RENDER: `render()` rebuilds the whole screen from `state` into
  *    `#app`. Discrete actions (clicking a button, picking an option) call
@@ -197,10 +198,12 @@ const REASONS = {
   }
 };
 
+// No dedicated "caution" tier exists in the brand palette (only
+// success/error) — gold is used for it instead of inventing a new hue.
 const LEVEL_META = {
-  ideal: { label: 'Good Fit', color: '#3F7A5D', bg: '#E7F1EA' },
-  caution: { label: 'Worth a Second Thought', color: '#9A6B12', bg: '#FBF0DC' },
-  avoid: { label: 'Likely to Work Against You', color: '#B3402A', bg: '#FBE7E1' }
+  ideal: { label: 'Good Fit', badgeClass: 'badge-success', bg: 'var(--color-success-light)', icon: 'check' },
+  caution: { label: 'Worth a Second Thought', badgeClass: 'badge-caution', bg: 'rgba(216,164,40,0.12)', icon: 'alert' },
+  avoid: { label: 'Likely to Work Against You', badgeClass: 'badge-error', bg: 'var(--color-error-light)', icon: 'x' }
 };
 
 const OUTCOMES = {
@@ -218,9 +221,7 @@ const OUTCOMES = {
   apology: { positive: 'reassured that you own the mistake and have a real plan, keeping their trust', neutral: 'accepting of the apology but watching closely for whether it happens again', negative: 'doubtful about relying on your team going forward' }
 };
 
-const STEP_TITLES = ['', 'Step 1 of 8 — Choose a Business Situation', 'Step 2 of 8 — Create Your Verbal Message', 'Step 3 of 8 — Add Non-Verbal Communication', 'Step 4 of 8 — Receiver Reaction', 'Step 5 of 8 — AI Communication Check', 'Step 6 of 8 — Improve Your Message', 'Step 7 of 8 — Suggested Rewrite & Persona', 'Step 8 of 8 — Final Communication Card'];
-
-const STOPWORDS = { the: 1, a: 1, an: 1, to: 1, of: 1, and: 1, is: 1, are: 1, i: 1, you: 1, it: 1, in: 1, on: 1, for: 1, that: 1, this: 1, will: 1, be: 1, we: 1, my: 1, your: 1, with: 1, was: 1, have: 1, has: 1, do: 1, does: 1, so: 1, but: 1, not: 1, at: 1, as: 1, if: 1, can: 1 };
+const STEP_TITLES = ['', 'Step 1 of 7 — Choose a Business Situation', 'Step 2 of 7 — Create Your Verbal Message', 'Step 3 of 7 — Add Non-Verbal Communication', 'Step 4 of 7 — Receiver Reaction', 'Step 5 of 7 — AI Communication Check', 'Step 6 of 7 — Suggested Rewrite', 'Step 7 of 7 — Final Communication Card'];
 
 // ============================================================
 // LOGIC (pure functions — no DOM access, easy to unit test)
@@ -258,13 +259,6 @@ function isCoherentText(text, minWords) {
   return { ok: true, reason: '' };
 }
 
-function topPhrases(text, n) {
-  const words = (text || '').toLowerCase().replace(/[^a-z0-9'\s]/g, ' ').split(/\s+/).filter((w) => w.length > 2 && !STOPWORDS[w]);
-  const counts = {};
-  words.forEach((w) => { counts[w] = (counts[w] || 0) + 1; });
-  return Object.keys(counts).sort((a, b) => counts[b] - counts[a]).slice(0, n || 5);
-}
-
 function analyzeVerbal(text) {
   const t = (text || '').trim();
   const lower = t.toLowerCase();
@@ -290,7 +284,7 @@ function getExplanation(catKey, optKey, situationId) {
   const reasonTpl = (REASONS[catKey] && REASONS[catKey][optKey] && REASONS[catKey][optKey][level]) || '';
   const text = fmt(reasonTpl, situation) || 'This choice is workable here, though not the strongest possible fit.';
   const meta = LEVEL_META[level];
-  return { level, levelLabel: meta.label, color: meta.color, bg: meta.bg, text };
+  return { level, levelLabel: meta.label, badgeClass: meta.badgeClass, icon: meta.icon, bg: meta.bg, text };
 }
 
 function buildFullAnalysis(state) {
@@ -408,7 +402,7 @@ function buildReceiverPreview(state, situation) {
 
 function buildSuggestedRewrite(state, situation) {
   const a = analyzeVerbal(state.verbalMessage);
-  const base = (state.improvedMessage && state.improvedMessage.trim()) || state.verbalMessage || '';
+  const base = state.verbalMessage || '';
   const aud = situation.audience;
   const goal = situation.goal;
   let opener;
@@ -446,45 +440,59 @@ function buildSuggestedRewrite(state, situation) {
   return { text: rewrite, rationale: rationaleParts.join('; ') + '.' };
 }
 
-function buildPersonaTraits(state) {
-  const a = analyzeVerbal(`${state.verbalMessage || ''} ${state.improvedMessage || ''}`);
-  const lengthTrait = a.wordCount < 8 ? 'Brief — tends to write short, direct messages' : (a.wordCount > 60 ? 'Expansive — tends to explain fully before landing the point' : 'Balanced — writes enough to be clear without over-explaining');
-  const courtesyTrait = a.hasCourtesy && !a.hasAggressive ? 'Warm and courteous by default' : (a.hasAggressive ? 'Direct, sometimes blunt under pressure' : 'Neutral and matter-of-fact');
-  const toneWords = [state.tone, state.wordChoice, state.clarity].filter((t) => t && t.trim()).join(', ') || 'not yet described';
-  const phrases = topPhrases(`${state.verbalMessage || ''} ${state.improvedMessage || ''}`, 5);
-  const punctTrait = a.exclaimCount >= 3 ? 'Uses exclamation marks often — comes across as energetic, occasionally rushed' : (a.exclaimCount >= 1 ? 'Uses the occasional exclamation mark for emphasis' : 'Uses measured punctuation, rarely exclamatory');
-  return [
-    { key: 'length', label: 'Message length', value: lengthTrait },
-    { key: 'courtesy', label: 'Default register', value: courtesyTrait },
-    { key: 'selfDescribed', label: 'Self-described style', value: toneWords },
-    { key: 'punctuation', label: 'Punctuation habit', value: punctTrait },
-    { key: 'phrases', label: 'Recurring words', value: phrases.length ? phrases.join(', ') : 'not enough text yet to tell' }
-  ];
+// ============================================================
+// AI (live Claude calls, with a rule-based fallback — see README.md)
+// ============================================================
+
+// The server never sees more than what's needed to write the check/rewrite:
+// scenario text, the student's own words, and the pre-computed ideal/
+// caution/avoid ratings for their non-verbal choices (so the model's
+// commentary can't contradict the rules taught elsewhere in the activity).
+function buildNonverbalPayload(state, situationId) {
+  return NONVERBAL_CATEGORIES.map((cat) => {
+    const optKey = state.nonverbal[cat.key];
+    if (!optKey) return null;
+    const opt = cat.options.find((o) => o.key === optKey);
+    return { category: cat.label, choice: opt.label, level: getLevel(cat.key, optKey, situationId) };
+  }).filter(Boolean);
 }
 
-function buildPersonaMarkdown(state, situation, traits) {
-  const lines = [];
-  lines.push(`# Communication Persona${state.studentName ? ' — ' + state.studentName : ''}`);
-  lines.push('');
-  lines.push('_Generated from the Verbal & Non-Verbal Business Communication activity, Stride School of Business._');
-  lines.push('');
-  lines.push('## Situation used to build this persona');
-  lines.push(situation ? situation.title : 'Not selected');
-  lines.push('');
-  lines.push('## Traits');
-  traits.forEach((t) => lines.push(`- **${t.label}**: ${t.value}`));
-  lines.push('');
-  lines.push('## Original message');
-  lines.push('> ' + (state.verbalMessage || '').split('\n').join('\n> '));
-  lines.push('');
-  if (state.improvedMessage) {
-    lines.push('## Improved message (student’s own revision)');
-    lines.push('> ' + state.improvedMessage.split('\n').join('\n> '));
-    lines.push('');
+function situationPayload(situation) {
+  return { title: situation.title, context: situation.context, audience: situation.audience, goal: situation.goal };
+}
+
+async function postJson(url, body) {
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Request to ${url} failed (${res.status})`);
   }
-  lines.push('## Notes for future activities');
-  lines.push('Use these traits as a starting context on this student’s natural voice so future suggested rewrites stay recognizably theirs rather than generic.');
-  return lines.join('\n');
+  return res.json();
+}
+
+async function fetchAiAnalysis(state, situation) {
+  const payload = {
+    situation: situationPayload(situation),
+    verbalMessage: state.verbalMessage,
+    tone: state.tone,
+    wordChoice: state.wordChoice,
+    clarity: state.clarity,
+    nonverbal: buildNonverbalPayload(state, situation.id),
+    receiverGuess: state.receiverGuess
+  };
+  const sections = await postJson('/api/analyze', payload);
+  if (!Array.isArray(sections) || !sections.length) throw new Error('Unexpected AI response shape');
+  return sections;
+}
+
+async function fetchAiRewrite(state, situation) {
+  const payload = {
+    situation: situationPayload(situation),
+    verbalMessage: state.verbalMessage
+  };
+  const result = await postJson('/api/rewrite', payload);
+  if (!result || typeof result.text !== 'string') throw new Error('Unexpected AI response shape');
+  return result;
 }
 
 // ============================================================
@@ -503,16 +511,22 @@ function initialState() {
     nonverbal: { facial: null, eye: null, posture: null, gesture: null, voice: null, space: null },
     receiverGuess: '',
     analysisRun: false,
+    analysisLoading: false,
+    analysisSource: '',
+    analysisError: '',
     analysisSections: [],
-    improvedMessage: '',
     learnVerbal: '',
     learnNonverbal: '',
     learnFuture: '',
     cardCreated: false,
     suggestionRun: false,
+    suggestionLoading: false,
+    suggestionSource: '',
+    suggestionError: '',
     suggestedRewrite: '',
     suggestionRationale: '',
-    personaDownloadNote: '',
+    cardDownloadLoading: false,
+    cardDownloadNote: '',
     scenarioHistory: loadScenarioHistory()
   };
 }
@@ -536,40 +550,49 @@ function pickNonverbal(catKey, optKey) {
   setState({ nonverbal: next });
 }
 
-function goNext() { setState({ screen: Math.min(8, state.screen + 1) }); }
+function goNext() { setState({ screen: Math.min(7, state.screen + 1) }); }
 function goBack() { setState({ screen: Math.max(0, state.screen - 1) }); }
-function startActivity() { setState({ screen: 1 }); }
-
-function runAnalysis() {
-  const sections = buildFullAnalysis(state);
-  setState({ analysisSections: sections, analysisRun: true });
+function startActivity() {
+  if (!state.studentName.trim()) return;
+  setState({ screen: 1 });
 }
 
-function generateSuggestion() {
+async function runAnalysis() {
   const situation = SITUATIONS.find((x) => x.id === state.situationId);
   if (!situation) return;
-  const result = buildSuggestedRewrite(state, situation);
-  setState({ suggestedRewrite: result.text, suggestionRationale: result.rationale, suggestionRun: true });
+  setState({ analysisLoading: true, analysisError: '' });
+  try {
+    const sections = await fetchAiAnalysis(state, situation);
+    setState({ analysisSections: sections, analysisRun: true, analysisLoading: false, analysisSource: 'ai' });
+  } catch (e) {
+    const sections = buildFullAnalysis(state);
+    setState({
+      analysisSections: sections,
+      analysisRun: true,
+      analysisLoading: false,
+      analysisSource: 'fallback',
+      analysisError: 'Live AI check is unavailable right now, so this is the built-in rule-based check instead.'
+    });
+  }
 }
 
-function downloadPersona() {
-  const situation = SITUATIONS.find((x) => x.id === state.situationId) || null;
-  const traits = buildPersonaTraits(state);
-  const md = buildPersonaMarkdown(state, situation, traits);
-  const filename = `${state.studentName ? state.studentName.replace(/[^a-z0-9]+/gi, '-').toLowerCase() : 'student'}-communication-persona.md`;
+async function generateSuggestion() {
+  const situation = SITUATIONS.find((x) => x.id === state.situationId);
+  if (!situation) return;
+  setState({ suggestionLoading: true, suggestionError: '' });
   try {
-    const blob = new Blob([md], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    setState({ personaDownloadNote: 'Downloaded.' });
+    const result = await fetchAiRewrite(state, situation);
+    setState({ suggestedRewrite: result.text, suggestionRationale: result.rationale || '', suggestionRun: true, suggestionLoading: false, suggestionSource: 'ai' });
   } catch (e) {
-    setState({ personaDownloadNote: 'Could not create the download just now.' });
+    const result = buildSuggestedRewrite(state, situation);
+    setState({
+      suggestedRewrite: result.text,
+      suggestionRationale: result.rationale,
+      suggestionRun: true,
+      suggestionLoading: false,
+      suggestionSource: 'fallback',
+      suggestionError: 'Live AI rewrite is unavailable right now, so this is the built-in suggested rewrite instead.'
+    });
   }
 }
 
@@ -581,6 +604,29 @@ function createCard() {
 }
 
 function editReflections() { setState({ cardCreated: false }); }
+
+async function downloadCardPng() {
+  const el = document.getElementById('finalCard');
+  if (!el || typeof html2canvas !== 'function') {
+    setState({ cardDownloadNote: 'Could not create the image just now.' });
+    return;
+  }
+  setState({ cardDownloadLoading: true, cardDownloadNote: '' });
+  try {
+    const canvas = await html2canvas(el, { backgroundColor: '#FFFFFF', scale: 2 });
+    const dataUrl = canvas.toDataURL('image/png');
+    const filename = `${state.studentName.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-communication-card.png`;
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setState({ cardDownloadLoading: false, cardDownloadNote: 'Downloaded.' });
+  } catch (e) {
+    setState({ cardDownloadLoading: false, cardDownloadNote: 'Could not create the image just now.' });
+  }
+}
 
 function resetActivity() {
   const keepHistory = state.scenarioHistory;
@@ -605,8 +651,8 @@ function derive() {
     const selected = s.situationId === sit.id;
     return Object.assign({}, sit, {
       selected,
-      borderColor: selected ? '#A85D16' : '#E4DFD5',
-      bgColor: selected ? '#FBF0DC' : '#FFFFFF',
+      borderColor: selected ? 'var(--color-purple)' : 'var(--color-gray-200)',
+      bgColor: selected ? 'var(--color-tint)' : 'var(--color-white)',
       triedBefore: !!triedSet[sit.id],
       recommended: sit.id === recommendedId && !selected
     });
@@ -618,8 +664,8 @@ function derive() {
       const chosen = selectedKey === opt.key;
       return Object.assign({}, opt, {
         chosen,
-        borderColor: chosen ? '#A85D16' : '#E4DFD5',
-        bgColor: chosen ? '#FBF0DC' : '#FFFFFF'
+        borderColor: chosen ? 'var(--color-purple)' : 'var(--color-gray-200)',
+        bgColor: chosen ? 'var(--color-tint)' : 'var(--color-white)'
       });
     });
     let explanation = null;
@@ -628,26 +674,27 @@ function derive() {
   });
 
   const allNvChosen = NONVERBAL_CATEGORIES.every((cat) => !!s.nonverbal[cat.key]);
-  const progressDots = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({ n, dotColor: n <= s.screen ? '#A85D16' : '#E4DFD5' }));
+  const progressDots = [1, 2, 3, 4, 5, 6, 7].map((n) => ({
+    n,
+    status: n < s.screen ? 'done' : (n === s.screen ? 'current' : 'upcoming')
+  }));
 
   const verbalCheck = isCoherentText(s.verbalMessage, 4);
   const receiverCheck = isCoherentText(s.receiverGuess, 3);
-  const improvedCheck = isCoherentText(s.improvedMessage, 4);
   const learnVerbalCheck = isCoherentText(s.learnVerbal, 3);
   const learnNonverbalCheck = isCoherentText(s.learnNonverbal, 3);
   const learnFutureCheck = isCoherentText(s.learnFuture, 3);
 
+  const canStart = s.studentName.trim().length > 0;
   const canStep1 = !!s.situationId;
   const canStep2 = verbalCheck.ok && s.tone.trim().length > 0 && s.wordChoice.trim().length > 0 && s.clarity.trim().length > 0;
   const canStep3 = allNvChosen;
   const canStep4 = receiverCheck.ok;
   const canStep5 = s.analysisRun;
-  const canStep6 = improvedCheck.ok;
-  const canStep7 = s.suggestionRun;
+  const canStep6 = s.suggestionRun;
   const canCard = learnVerbalCheck.ok && learnNonverbalCheck.ok && learnFutureCheck.ok;
 
   const receiverPreview = situation ? buildReceiverPreview(s, situation) : '';
-  const personaTraits = buildPersonaTraits(s);
 
   const cardNvList = nvCategories.filter((c) => c.hasSelection).map((c) => {
     const chosenOpt = c.options.find((o) => o.chosen);
@@ -656,9 +703,9 @@ function derive() {
 
   return {
     situation, situationItems, nvCategories, allNvChosen, progressDots,
-    verbalCheck, receiverCheck, improvedCheck, learnVerbalCheck, learnNonverbalCheck, learnFutureCheck,
-    canStep1, canStep2, canStep3, canStep4, canStep5, canStep6, canStep7, canCard,
-    receiverPreview, personaTraits, cardNvList
+    verbalCheck, receiverCheck, learnVerbalCheck, learnNonverbalCheck, learnFutureCheck,
+    canStart, canStep1, canStep2, canStep3, canStep4, canStep5, canStep6, canCard,
+    receiverPreview, cardNvList
   };
 }
 
@@ -674,55 +721,96 @@ function checkSvg(size, stroke) {
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
 }
 
+// Small line-icon set (same stroke-based style as checkSvg) used for the
+// AI Communication Check categories and the ideal/caution/avoid badges, so
+// a run of otherwise-identical cards is scannable at a glance.
+const ICON_PATHS = {
+  check: '<polyline points="20 6 9 17 4 12"></polyline>',
+  alert: '<path d="M12 2 L22 20 L2 20 Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="16.5" x2="12" y2="16.6"></line>',
+  x: '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>',
+  briefcase: '<rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>',
+  target: '<circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="6"></circle><circle cx="12" cy="12" r="2"></circle>',
+  activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>',
+  messageCircle: '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>',
+  users: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path>',
+  eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle>'
+};
+
+function iconSvg(name, size, stroke) {
+  const path = ICON_PATHS[name] || ICON_PATHS.messageCircle;
+  return `<svg class="feedback-icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${stroke}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+}
+
+// Maps each AI Communication Check section label to an icon — used on
+// Step 5's feedback cards and the final card's condensed AI Feedback list.
+const SECTION_ICONS = {
+  'Professionalism': 'briefcase',
+  'Clarity': 'target',
+  'Tone': 'activity',
+  'Verbal Communication': 'messageCircle',
+  'Non-Verbal Communication': 'users',
+  'Possible Receiver Reaction': 'eye'
+};
+
 function topbarHTML(s) {
   return `
     <div class="topbar">
-      <div class="col" style="gap:2px;">
-        <span style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#A85D16;">Stride School of Business</span>
-        <span style="font-size:16px;font-weight:600;font-family:'Space Grotesk',system-ui,sans-serif;color:#14213D;">Verbal &amp; Non-Verbal Business Communication</span>
+      <div class="col" style="gap:6px;min-width:0;">
+        <img class="logo-full" src="./logo.png" alt="Stride School of Business">
+        <img class="logo-icon" src="./logo-icon.png" alt="Stride School of Business">
+        ${s.screen > 0 ? `<span class="type-t1" style="color:var(--color-purple);">Read the Room</span>` : ''}
       </div>
-      <div class="row align-center gap-16">
-        <span style="font-size:13px;color:#6B7280;">BBA I &middot; Classroom Activity</span>
+      <div class="row align-center gap-16" style="flex-shrink:0;">
+        <span class="type-b2 topbar-caption" style="color:var(--color-gray-600);">BBA I &middot; Classroom Activity</span>
         ${s.screen > 0 ? `<button class="btn btn-ghost" type="button" data-action="resetActivity">Restart</button>` : ''}
       </div>
     </div>`;
 }
 
 function progressHTML(s, v) {
-  if (!(s.screen >= 1 && s.screen <= 8)) return '';
-  const dots = v.progressDots.map((d) => `<span style="width:10px;height:10px;border-radius:999px;background:${d.dotColor};display:inline-block;"></span>`).join('');
+  if (!(s.screen >= 1 && s.screen <= 7)) return '';
+  const steps = v.progressDots.map((d, i) => {
+    const dotClass = d.status === 'done' ? 'step-dot-done' : (d.status === 'current' ? 'step-dot-current' : 'step-dot-upcoming');
+    const dot = `<div class="step-dot ${dotClass}">${d.status === 'done' ? checkSvg(11, '#FFFFFF') : d.n}</div>`;
+    const isLast = i === v.progressDots.length - 1;
+    const connector = isLast ? '' : `<div class="step-connector ${d.status === 'done' ? 'step-connector-done' : 'step-connector-upcoming'}"></div>`;
+    return dot + connector;
+  }).join('');
   return `
-    <div class="row between align-center gap-16">
-      <span style="font-size:13px;font-weight:600;color:#6B7280;">${esc(STEP_TITLES[s.screen] || '')}</span>
-      <div class="row gap-6">${dots}</div>
+    <div class="col gap-8">
+      <span class="type-c1" style="color:var(--color-gray-600);">${esc(STEP_TITLES[s.screen] || '')}</span>
+      <div class="row align-center">${steps}</div>
     </div>`;
 }
 
-function introHTML(s) {
+function introHTML(s, v) {
   return `
-    <div class="card col gap-20" style="padding:36px;">
-      <div class="col gap-10">
-        <span style="font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#A85D16;">Classroom Activity</span>
-        <h1 style="margin:0;font-family:'Space Grotesk',system-ui,sans-serif;font-size:30px;font-weight:700;color:#14213D;line-height:1.25;">Verbal &amp; Non-Verbal Business Communication</h1>
-        <p style="margin:0;font-size:15px;color:#4B5563;line-height:1.65;">In business, how you say something often matters as much as what you say. In this activity you will pick a real workplace situation, write your own message, choose the body language and voice that go with it, then see how those choices are likely to land, and improve them.</p>
+    <div class="card" style="padding:0;overflow:hidden;">
+      <div class="hero-gradient col gap-10" style="padding:40px 36px;">
+        <span class="type-c1 eyebrow eyebrow-on-dark">Classroom Activity</span>
+        <h1 class="type-h1" style="margin:0;color:var(--color-white);">Read the Room</h1>
+        <p class="type-b1" style="margin:0;color:var(--color-tint);line-height:1.65;max-width:560px;">In business, how you say something often matters as much as what you say. This activity puts that to the test with a real workplace situation of your own.</p>
       </div>
-      <div class="col gap-10" style="padding:20px;background:#FBF8F1;border-radius:10px;border:1.5px solid #E4DFD5;">
-        <span class="field-label">How this works</span>
-        <ol style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px;font-size:14px;color:#374151;line-height:1.5;">
-          <li>Choose a business situation.</li>
-          <li>Write the message you would actually say.</li>
-          <li>Choose the body language and tone of voice that go with it.</li>
-          <li>Predict how the other person will react.</li>
-          <li>Run a communication check for feedback.</li>
-          <li>Improve your message.</li>
-          <li>Build your final Business Communication Impact Card.</li>
-        </ol>
+      <div class="col gap-20" style="padding:30px 36px 36px;">
+        <div class="col gap-10" style="padding:20px;background:var(--color-tint-subtle);border-radius:10px;border:1.5px solid var(--color-gray-200);">
+          <span class="type-h5" style="color:var(--color-purple);">How this works</span>
+          <ol class="type-b2" style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px;color:var(--color-text);">
+            <li>Choose a business situation.</li>
+            <li>Write the message you would actually say.</li>
+            <li>Choose the body language and tone of voice that go with it.</li>
+            <li>Predict how the other person will react.</li>
+            <li>Run a communication check for feedback.</li>
+            <li>See a suggested rewrite for this situation.</li>
+            <li>Build your final Business Communication Impact Card.</li>
+          </ol>
+        </div>
+        <div class="col gap-8" style="max-width:360px;">
+          <label class="type-t3" style="color:var(--color-text);" for="studentName">Your name (required, for your instructor)</label>
+          <input id="studentName" class="text-input" type="text" placeholder="e.g., Aditi Sharma">
+          <span class="type-c2" style="color:var(--color-gray-600);">Used to label your final card for your instructor.</span>
+        </div>
+        <div><button id="start-btn" class="btn btn-primary" type="button" style="padding:14px 28px;" ${v.canStart ? '' : 'disabled'} data-action="startActivity">START ACTIVITY</button></div>
       </div>
-      <div class="col gap-8" style="max-width:360px;">
-        <label class="field-label" for="studentName">Your name (optional, for your instructor)</label>
-        <input id="studentName" class="text-input" type="text" placeholder="e.g., Aditi Sharma">
-      </div>
-      <div><button class="btn btn-primary" type="button" style="padding:14px 28px;font-size:15px;" data-action="startActivity">START ACTIVITY</button></div>
     </div>`;
 }
 
@@ -730,21 +818,21 @@ function step1HTML(v) {
   const cards = v.situationItems.map((sit) => `
     <button class="situation-card" type="button" style="border-color:${sit.borderColor};background:${sit.bgColor};" data-action="selectSituation" data-id="${sit.id}">
       <div class="row" style="align-items:flex-start;justify-content:space-between;gap:8px;">
-        <span style="font-weight:600;font-size:15px;color:#14213D;">${esc(sit.title)}</span>
-        ${sit.selected ? checkSvg(18, '#A85D16') : ''}
+        <span class="type-t3" style="color:var(--color-text);">${esc(sit.title)}</span>
+        ${sit.selected ? checkSvg(18, '#7D287F') : ''}
       </div>
-      <span style="font-size:13px;color:#6B7280;line-height:1.4;">${esc(sit.blurb)}</span>
+      <span class="type-c1" style="color:var(--color-gray-600);">${esc(sit.blurb)}</span>
       <div class="row gap-6 wrap">
-        ${sit.recommended ? `<span class="badge" style="background:#3F7A5D;">SUGGESTED FOR YOU</span>` : ''}
-        ${sit.triedBefore ? `<span class="badge" style="background:#9A8F7A;">DONE BEFORE</span>` : ''}
+        ${sit.recommended ? `<span class="badge badge-purple">SUGGESTED FOR YOU</span>` : ''}
+        ${sit.triedBefore ? `<span class="badge badge-neutral">DONE BEFORE</span>` : ''}
       </div>
     </button>`).join('');
 
   return `
     <div class="card col gap-20" style="padding:30px;">
       <div class="col gap-6">
-        <h2 style="margin:0;font-family:'Space Grotesk',system-ui,sans-serif;font-size:21px;color:#14213D;">Choose a Business Situation</h2>
-        <p style="margin:0;font-size:14px;color:#6B7280;">Pick the scenario you want to work through. You will use it for the rest of the activity. Situations you have not tried yet are marked so you can build a wider range of skills each time you use this activity.</p>
+        <h2 class="type-h4" style="margin:0;color:var(--color-purple);">Choose a Business Situation</h2>
+        <p class="type-b2" style="margin:0;color:var(--color-gray-600);">Pick the scenario you want to work through. You will use it for the rest of the activity. Situations you have not tried yet are marked so you can build a wider range of skills each time you use this activity.</p>
       </div>
       <div class="grid-2">${cards}</div>
       <div class="row between align-center divider-top">
@@ -758,11 +846,11 @@ function step2HTML(v) {
   return `
     <div class="card col gap-20" style="padding:30px;">
       <div class="col gap-6">
-        <span class="field-label" style="color:#A85D16;">${esc(v.situation ? v.situation.title : '')}</span>
-        <h2 style="margin:0;font-family:'Space Grotesk',system-ui,sans-serif;font-size:21px;color:#14213D;">Create Your Verbal Message</h2>
-        <p style="margin:0;font-size:14px;color:#6B7280;">What would YOU say in this situation? Write it the way you would actually say it out loud.</p>
+        <span class="type-c1 eyebrow">${esc(v.situation ? v.situation.title : '')}</span>
+        <h2 class="type-h4" style="margin:0;color:var(--color-purple);">Create Your Verbal Message</h2>
+        <p class="type-b2" style="margin:0;color:var(--color-gray-600);">What would YOU say in this situation? Write it the way you would actually say it out loud.</p>
       </div>
-      <div style="padding:12px 14px;border-radius:8px;background:#FBF8F1;border:1.5px solid #E4DFD5;font-size:13px;color:#6B7280;line-height:1.5;">${esc(v.situation ? v.situation.context : '')}</div>
+      <div class="type-c1" style="padding:12px 14px;border-radius:8px;background:var(--color-tint-subtle);border:1.5px solid var(--color-gray-200);color:var(--color-gray-600);">${esc(v.situation ? v.situation.context : '')}</div>
       <div class="col gap-8">
         <label class="field-label" for="verbalMessage">Your message</label>
         <textarea id="verbalMessage" class="textarea" rows="5" placeholder="Type exactly what you would say..."></textarea>
@@ -793,16 +881,16 @@ function step3HTML(v) {
   const categories = v.nvCategories.map((cat) => {
     const options = cat.options.map((opt) => `
       <button class="chip" type="button" style="border-color:${opt.borderColor};background:${opt.bgColor};" data-action="pickNonverbal" data-cat="${cat.key}" data-opt="${opt.key}">
-        ${opt.chosen ? checkSvg(14, '#A85D16') : ''}
+        ${opt.chosen ? checkSvg(14, '#7D287F') : ''}
         ${esc(opt.label)}
       </button>`).join('');
     const explanation = cat.hasSelection ? `
       <div class="row" style="align-items:flex-start;gap:10px;padding:12px 14px;border-radius:8px;background:${cat.explanation.bg};">
-        <span class="badge" style="background:${cat.explanation.color};">${esc(cat.explanation.levelLabel)}</span>
-        <span style="font-size:13px;color:#374151;line-height:1.5;">${esc(cat.explanation.text)}</span>
+        <span class="badge ${cat.explanation.badgeClass}" style="display:inline-flex;align-items:center;gap:4px;">${iconSvg(cat.explanation.icon, 12, '#FFFFFF')}${esc(cat.explanation.levelLabel)}</span>
+        <span class="type-b2" style="color:var(--color-text);">${esc(cat.explanation.text)}</span>
       </div>` : '';
     return `
-      <div class="col gap-10" style="padding:16px 0;border-top:1.5px solid #EEE9DD;">
+      <div class="col gap-10" style="padding:16px 0;border-top:1.5px solid var(--color-gray-200);">
         <span class="field-label">${esc(cat.label)}</span>
         <div class="row wrap gap-10">${options}</div>
         ${explanation}
@@ -812,12 +900,12 @@ function step3HTML(v) {
   return `
     <div class="card col gap-6" style="padding:30px;">
       <div class="col gap-6" style="padding-bottom:14px;">
-        <span class="field-label" style="color:#A85D16;">${esc(v.situation ? v.situation.title : '')}</span>
-        <h2 style="margin:0;font-family:'Space Grotesk',system-ui,sans-serif;font-size:21px;color:#14213D;">Add Non-Verbal Communication</h2>
-        <p style="margin:0;font-size:14px;color:#6B7280;">Choose how you would deliver this message. Pick one option in each row, then read why it fits or does not fit this situation.</p>
+        <span class="type-c1 eyebrow">${esc(v.situation ? v.situation.title : '')}</span>
+        <h2 class="type-h4" style="margin:0;color:var(--color-purple);">Add Non-Verbal Communication</h2>
+        <p class="type-b2" style="margin:0;color:var(--color-gray-600);">Choose how you would deliver this message. Pick one option in each row, then read why it fits or does not fit this situation.</p>
       </div>
       ${categories}
-      <div class="row between align-center" style="padding-top:16px;margin-top:8px;border-top:1.5px solid #EEE9DD;">
+      <div class="row between align-center" style="padding-top:16px;margin-top:8px;border-top:1.5px solid var(--color-gray-200);">
         <button class="btn btn-ghost" type="button" data-action="goBack">BACK</button>
         <button class="btn btn-primary" type="button" ${v.canStep3 ? '' : 'disabled'} data-action="goNext">NEXT</button>
       </div>
@@ -828,18 +916,18 @@ function step4HTML(v) {
   return `
     <div class="card col gap-20" style="padding:30px;">
       <div class="col gap-6">
-        <span class="field-label" style="color:#A85D16;">${esc(v.situation ? v.situation.title : '')}</span>
-        <h2 style="margin:0;font-family:'Space Grotesk',system-ui,sans-serif;font-size:21px;color:#14213D;">Receiver Reaction</h2>
-        <p style="margin:0;font-size:14px;color:#6B7280;">How do you think the receiver will react to your communication?</p>
+        <span class="type-c1 eyebrow">${esc(v.situation ? v.situation.title : '')}</span>
+        <h2 class="type-h4" style="margin:0;color:var(--color-purple);">Receiver Reaction</h2>
+        <p class="type-b2" style="margin:0;color:var(--color-gray-600);">How do you think the receiver will react to your communication?</p>
       </div>
       <div class="col gap-8">
         <label class="field-label" for="receiverGuess">Your prediction</label>
         <textarea id="receiverGuess" class="textarea" rows="4" placeholder="Write what you expect them to think or feel..."></textarea>
         <span id="receiverGuessWarning" class="warning-text ${v.receiverCheck.reason ? '' : 'hidden'}">${esc(v.receiverCheck.reason)}</span>
       </div>
-      <div class="col gap-8" style="padding:16px 18px;border-radius:10px;background:#FBF8F1;border:1.5px solid #E4DFD5;">
-        <span class="field-label" style="color:#A85D16;">Likely Reaction, Based on Your Choices So Far</span>
-        <span id="receiverPreview" style="font-size:14px;color:#374151;line-height:1.55;">${esc(v.receiverPreview)}</span>
+      <div class="col gap-8" style="padding:16px 18px;border-radius:10px;background:var(--color-tint-subtle);border:1.5px solid var(--color-gray-200);">
+        <span class="type-c1 eyebrow">Likely Reaction, Based on Your Choices So Far</span>
+        <span id="receiverPreview" class="type-b2" style="color:var(--color-text);">${esc(v.receiverPreview)}</span>
       </div>
       <div class="row between align-center divider-top">
         <button class="btn btn-ghost" type="button" data-action="goBack">BACK</button>
@@ -849,23 +937,35 @@ function step4HTML(v) {
 }
 
 function step5HTML(s, v) {
+  const sourceBadge = s.analysisRun
+    ? (s.analysisSource === 'ai'
+        ? `<span class="badge badge-success">AI-GENERATED</span>`
+        : `<span class="badge badge-neutral">RULE-BASED (OFFLINE)</span>`)
+    : '';
   const sections = s.analysisRun ? `
     <div class="col gap-14">
       ${s.analysisSections.map((sec) => `
-        <div class="col gap-6" style="padding:16px 18px;border-radius:10px;background:#FBF8F1;border:1.5px solid #E4DFD5;">
-          <span class="field-label">${esc(sec.label)}</span>
-          <span style="font-size:14px;color:#374151;line-height:1.55;">${esc(sec.text)}</span>
+        <div class="row gap-10" style="align-items:flex-start;padding:16px 18px;border-radius:10px;background:var(--color-tint-subtle);border:1.5px solid var(--color-gray-200);">
+          <div style="flex-shrink:0;width:32px;height:32px;border-radius:8px;background:var(--color-tint);display:flex;align-items:center;justify-content:center;">${iconSvg(SECTION_ICONS[sec.label], 17, '#7D287F')}</div>
+          <div class="col gap-6">
+            <span class="type-c1 eyebrow">${esc(sec.label)}</span>
+            <span class="type-b2" style="color:var(--color-text);">${esc(sec.text)}</span>
+          </div>
         </div>`).join('')}
     </div>` : '';
 
   return `
     <div class="card col gap-20" style="padding:30px;">
       <div class="col gap-6">
-        <span class="field-label" style="color:#A85D16;">${esc(v.situation ? v.situation.title : '')}</span>
-        <h2 style="margin:0;font-family:'Space Grotesk',system-ui,sans-serif;font-size:21px;color:#14213D;">AI Communication Check</h2>
-        <p style="margin:0;font-size:14px;color:#6B7280;">Run a check on your message, tone, body language and voice choices. This looks for patterns, not perfection, and it never gives a score.</p>
+        <span class="type-c1 eyebrow">${esc(v.situation ? v.situation.title : '')}</span>
+        <h2 class="type-h4" style="margin:0;color:var(--color-purple);">AI Communication Check</h2>
+        <p class="type-b2" style="margin:0;color:var(--color-gray-600);">Run a check on your message, tone, body language and voice choices. This looks for patterns, not perfection, and it never gives a score.</p>
       </div>
-      <div><button class="btn btn-primary" type="button" style="padding:14px 26px;" data-action="runAnalysis">ANALYZE MY COMMUNICATION</button></div>
+      <div class="row align-center gap-14">
+        <button class="btn btn-primary" type="button" style="padding:14px 26px;" ${s.analysisLoading ? 'disabled' : ''} data-action="runAnalysis">${s.analysisLoading ? 'ANALYZING…' : 'ANALYZE MY COMMUNICATION'}</button>
+        ${sourceBadge}
+      </div>
+      ${s.analysisError ? `<span class="warning-text">${esc(s.analysisError)}</span>` : ''}
       ${sections}
       <div class="row between align-center divider-top">
         <button class="btn btn-ghost" type="button" data-action="goBack">BACK</button>
@@ -875,90 +975,53 @@ function step5HTML(s, v) {
 }
 
 function step6HTML(s, v) {
-  const feedback = s.analysisSections.map((sec) => `
-    <div class="col gap-4" style="padding:12px 14px;border-radius:8px;background:#FBF8F1;border:1.5px solid #E4DFD5;">
-      <span style="font-size:12px;font-weight:700;color:#A85D16;text-transform:uppercase;letter-spacing:.04em;">${esc(sec.label)}</span>
-      <span style="font-size:13px;color:#374151;line-height:1.5;">${esc(sec.text)}</span>
-    </div>`).join('');
-
-  return `
-    <div class="card col gap-20" style="padding:30px;">
-      <h2 style="margin:0;font-family:'Space Grotesk',system-ui,sans-serif;font-size:21px;color:#14213D;">Improve Your Message</h2>
-      <div class="col gap-8">
-        <span class="field-label">MY ORIGINAL MESSAGE</span>
-        <div style="padding:14px 16px;border-radius:8px;background:#F4F1E9;border:1.5px solid #E4DFD5;font-size:14px;color:#374151;line-height:1.55;white-space:pre-line;">${esc(s.verbalMessage)}</div>
-      </div>
-      <div class="col gap-10">
-        <span class="field-label">AI FEEDBACK</span>
-        ${feedback}
-      </div>
-      <div class="col gap-8">
-        <label class="field-label" for="improvedMessage">MY IMPROVED MESSAGE</label>
-        <textarea id="improvedMessage" class="textarea" rows="5" placeholder="Rewrite your message using the feedback above..."></textarea>
-        <span id="improvedMessageWarning" class="warning-text ${v.improvedCheck.reason ? '' : 'hidden'}">${esc(v.improvedCheck.reason)}</span>
-      </div>
-      <div class="row between align-center divider-top">
-        <button class="btn btn-ghost" type="button" data-action="goBack">BACK</button>
-        <button id="step6-next-btn" class="btn btn-primary" type="button" ${v.canStep6 ? '' : 'disabled'} data-action="goNext">NEXT</button>
-      </div>
-    </div>`;
-}
-
-function step7HTML(s, v) {
-  const compareYourMessage = (s.improvedMessage && s.improvedMessage.trim()) || s.verbalMessage;
+  const sourceBadge = s.suggestionRun
+    ? (s.suggestionSource === 'ai'
+        ? `<span class="badge badge-success">AI-GENERATED</span>`
+        : `<span class="badge badge-neutral">RULE-BASED (OFFLINE)</span>`)
+    : '';
   const body = s.suggestionRun ? `
     <div class="grid-2">
-      <div class="col gap-8" style="padding:16px;border-radius:10px;background:#F4F1E9;border:1.5px solid #E4DFD5;">
+      <div class="col gap-6">
         <span class="field-label">YOUR MESSAGE</span>
-        <span style="font-size:14px;color:#374151;line-height:1.55;white-space:pre-line;">${esc(compareYourMessage)}</span>
+        <div class="bubble bubble-you bubble-tail-left type-b2" style="white-space:pre-line;">${esc(s.verbalMessage)}</div>
       </div>
-      <div class="col gap-8" style="padding:16px;border-radius:10px;background:#EAF2ED;border:1.5px solid #CFE3D6;">
-        <span class="field-label" style="color:#274236;">SUGGESTED REWRITE</span>
-        <span style="font-size:14px;color:#274236;line-height:1.55;white-space:pre-line;">${esc(s.suggestedRewrite)}</span>
+      <div class="col gap-6">
+        <span class="field-label" style="color:var(--color-success);">SUGGESTED REWRITE</span>
+        <div class="bubble bubble-improved bubble-tail-right type-b2" style="white-space:pre-line;">${esc(s.suggestedRewrite)}</div>
       </div>
     </div>
-    <div class="col gap-6" style="padding:14px 16px;border-radius:8px;background:#FBF8F1;border:1.5px solid #E4DFD5;">
-      <span class="field-label" style="color:#A85D16;">WHY THIS REWRITE</span>
-      <span style="font-size:13px;color:#374151;line-height:1.5;">${esc(s.suggestionRationale)}</span>
-    </div>
-    <div class="col gap-10 divider-top">
-      <span class="field-label">YOUR COMMUNICATION PERSONA (SO FAR)</span>
-      <p style="margin:0;font-size:13px;color:#6B7280;">Built from the words, tone and non-verbal choices you have entered across this activity.</p>
-      <div class="col gap-6" style="padding:14px 16px;border-radius:8px;background:#FFFFFF;border:1.5px solid #E4DFD5;">
-        ${v.personaTraits.map((t) => `
-          <div class="row gap-8" style="font-size:13px;color:#374151;line-height:1.5;">
-            <span style="font-weight:600;color:#14213D;min-width:130px;">${esc(t.label)}</span>
-            <span>${esc(t.value)}</span>
-          </div>`).join('')}
-      </div>
-      <div>
-        <button class="btn btn-secondary" type="button" data-action="downloadPersona">DOWNLOAD MY PERSONA (.MD)</button>
-        ${s.personaDownloadNote ? `<span style="font-size:12px;color:#6B7280;margin-left:10px;">${esc(s.personaDownloadNote)}</span>` : ''}
-      </div>
+    <div class="col gap-6" style="padding:14px 16px;border-radius:8px;background:var(--color-tint-subtle);border:1.5px solid var(--color-gray-200);">
+      <span class="type-c1 eyebrow">WHY THIS REWRITE</span>
+      <span class="type-b2" style="color:var(--color-text);">${esc(s.suggestionRationale)}</span>
     </div>` : '';
 
   return `
     <div class="card col gap-20" style="padding:30px;">
       <div class="col gap-6">
-        <span class="field-label" style="color:#A85D16;">${esc(v.situation ? v.situation.title : '')}</span>
-        <h2 style="margin:0;font-family:'Space Grotesk',system-ui,sans-serif;font-size:21px;color:#14213D;">Suggested Rewrite &amp; Your Communication Persona</h2>
-        <p style="margin:0;font-size:14px;color:#6B7280;">See your message next to a coach-style suggested rewrite for this situation, then build a short persona of how you tend to communicate. This runs entirely from patterns in your own writing &mdash; it never scores you.</p>
+        <span class="type-c1 eyebrow">${esc(v.situation ? v.situation.title : '')}</span>
+        <h2 class="type-h4" style="margin:0;color:var(--color-purple);">Suggested Rewrite</h2>
+        <p class="type-b2" style="margin:0;color:var(--color-gray-600);">See your message next to a coach-style suggested rewrite for this situation, based on the feedback from your communication check.</p>
       </div>
-      <div><button class="btn btn-primary" type="button" style="padding:14px 26px;" data-action="generateSuggestion">GENERATE SUGGESTED REWRITE</button></div>
+      <div class="row align-center gap-14">
+        <button class="btn btn-primary" type="button" style="padding:14px 26px;" ${s.suggestionLoading ? 'disabled' : ''} data-action="generateSuggestion">${s.suggestionLoading ? 'GENERATING…' : 'GENERATE SUGGESTED REWRITE'}</button>
+        ${sourceBadge}
+      </div>
+      ${s.suggestionError ? `<span class="warning-text">${esc(s.suggestionError)}</span>` : ''}
       ${body}
       <div class="row between align-center divider-top">
         <button class="btn btn-ghost" type="button" data-action="goBack">BACK</button>
-        <button class="btn btn-primary" type="button" ${v.canStep7 ? '' : 'disabled'} data-action="goNext">NEXT</button>
+        <button class="btn btn-primary" type="button" ${v.canStep6 ? '' : 'disabled'} data-action="goNext">NEXT</button>
       </div>
     </div>`;
 }
 
-function step8HTML(s, v) {
+function step7HTML(s, v) {
   if (!s.cardCreated) {
     return `
       <div class="card col gap-20" style="padding:30px;">
-        <h2 style="margin:0;font-family:'Space Grotesk',system-ui,sans-serif;font-size:21px;color:#14213D;">Final Business Communication Card</h2>
-        <p style="margin:0;font-size:14px;color:#6B7280;">Before you build your card, reflect on what you learned.</p>
+        <h2 class="type-h4" style="margin:0;color:var(--color-purple);">Final Business Communication Card</h2>
+        <p class="type-b2" style="margin:0;color:var(--color-gray-600);">Before you build your card, reflect on what you learned.</p>
         <div class="col gap-8">
           <label class="field-label" for="learnVerbal">What I learned about verbal communication</label>
           <textarea id="learnVerbal" class="textarea" rows="3" placeholder="Write your reflection..."></textarea>
@@ -982,39 +1045,36 @@ function step8HTML(s, v) {
   }
 
   const nvRows = v.cardNvList.map((nv) => `
-    <div class="row between" style="gap:12px;padding:8px 0;border-bottom:1px solid #EEE9DD;">
-      <span style="font-size:13px;color:#6B7280;">${esc(nv.label)}</span>
-      <span style="font-size:13px;color:#14213D;font-weight:500;">${esc(nv.choice)}</span>
+    <div class="row between" style="gap:12px;padding:8px 0;border-bottom:1px solid var(--color-gray-200);">
+      <span class="type-b2" style="color:var(--color-gray-600);">${esc(nv.label)}</span>
+      <span class="type-t3" style="color:var(--color-text);">${esc(nv.choice)}</span>
     </div>`).join('');
 
   const analysisRows = s.analysisSections.map((sec) => `
-    <div class="col gap-4" style="padding:10px 12px;border-radius:8px;background:#FBF8F1;border:1.5px solid #E4DFD5;">
-      <span style="font-size:11px;font-weight:700;color:#A85D16;text-transform:uppercase;letter-spacing:.04em;">${esc(sec.label)}</span>
-      <span style="font-size:13px;color:#374151;line-height:1.5;">${esc(sec.text)}</span>
-    </div>`).join('');
-
-  const personaRows = v.personaTraits.map((t) => `
-    <div class="row gap-8" style="font-size:13px;color:#374151;line-height:1.5;">
-      <span style="font-weight:600;color:#14213D;min-width:130px;">${esc(t.label)}</span>
-      <span>${esc(t.value)}</span>
+    <div class="row gap-8" style="align-items:flex-start;padding:10px 12px;border-radius:8px;background:var(--color-tint-subtle);border:1.5px solid var(--color-gray-200);">
+      <div style="flex-shrink:0;width:24px;height:24px;border-radius:6px;background:var(--color-tint);display:flex;align-items:center;justify-content:center;">${iconSvg(SECTION_ICONS[sec.label], 13, '#7D287F')}</div>
+      <div class="col gap-2">
+        <span class="type-c1 eyebrow">${esc(sec.label)}</span>
+        <span class="type-b2" style="color:var(--color-text);">${esc(sec.text)}</span>
+      </div>
     </div>`).join('');
 
   return `
-    <div class="card" style="padding:0;overflow:hidden;">
-      <div class="col gap-4" style="padding:26px 30px;background:#14213D;">
-        <span style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#E8B27A;">Business Communication Impact Card</span>
-        <span style="font-size:21px;font-weight:700;font-family:'Space Grotesk',system-ui,sans-serif;color:#FFFFFF;">${esc(v.situation ? v.situation.title : '')}</span>
-        ${s.studentName ? `<span style="font-size:13px;color:#C7CEDB;">Prepared by ${esc(s.studentName)}</span>` : ''}
+    <div id="finalCard" class="card" style="padding:0;overflow:hidden;">
+      <div class="col gap-4" style="padding:26px 30px;background:var(--color-purple-deep);">
+        <span class="type-c1 eyebrow eyebrow-on-dark">Business Communication Impact Card</span>
+        <span class="type-h4" style="color:var(--color-white);">${esc(v.situation ? v.situation.title : '')}</span>
+        <span class="type-c1" style="color:var(--color-tint);">Prepared by ${esc(s.studentName)}</span>
       </div>
       <div class="col gap-20" style="padding:26px 30px;">
         <div class="col gap-6">
           <span class="field-label">Original Verbal Message</span>
-          <div style="padding:12px 14px;border-radius:8px;background:#F4F1E9;font-size:14px;color:#374151;line-height:1.55;white-space:pre-line;">${esc(s.verbalMessage)}</div>
+          <div class="bubble-row"><div class="bubble bubble-you bubble-tail-left type-b2" style="white-space:pre-line;">${esc(s.verbalMessage)}</div></div>
         </div>
         <div class="grid-3">
-          <div class="col gap-4"><span class="field-label">Tone</span><span style="font-size:14px;color:#374151;">${esc(s.tone)}</span></div>
-          <div class="col gap-4"><span class="field-label">Word Choice</span><span style="font-size:14px;color:#374151;">${esc(s.wordChoice)}</span></div>
-          <div class="col gap-4"><span class="field-label">Clarity</span><span style="font-size:14px;color:#374151;">${esc(s.clarity)}</span></div>
+          <div class="col gap-4"><span class="field-label">Tone</span><span class="type-b2" style="color:var(--color-text);">${esc(s.tone)}</span></div>
+          <div class="col gap-4"><span class="field-label">Word Choice</span><span class="type-b2" style="color:var(--color-text);">${esc(s.wordChoice)}</span></div>
+          <div class="col gap-4"><span class="field-label">Clarity</span><span class="type-b2" style="color:var(--color-text);">${esc(s.clarity)}</span></div>
         </div>
         <div class="col gap-8">
           <span class="field-label">Non-Verbal Communication</span>
@@ -1022,37 +1082,29 @@ function step8HTML(s, v) {
         </div>
         <div class="col gap-6">
           <span class="field-label">Expected Receiver Reaction</span>
-          <div style="padding:12px 14px;border-radius:8px;background:#F4F1E9;font-size:14px;color:#374151;line-height:1.55;white-space:pre-line;">${esc(s.receiverGuess)}</div>
+          <div class="bubble-row justify-end"><div class="bubble bubble-them bubble-tail-right type-b2" style="white-space:pre-line;">${esc(s.receiverGuess)}</div></div>
         </div>
         <div class="col gap-10">
           <span class="field-label">AI Feedback</span>
           ${analysisRows}
         </div>
         <div class="col gap-6">
-          <span class="field-label">Improved Communication</span>
-          <div style="padding:12px 14px;border-radius:8px;background:#EAF2ED;border:1.5px solid #CFE3D6;font-size:14px;color:#274236;line-height:1.55;white-space:pre-line;">${esc(s.improvedMessage)}</div>
-        </div>
-        ${s.suggestedRewrite ? `
-        <div class="col gap-6">
-          <span class="field-label">Suggested Rewrite</span>
-          <div style="padding:12px 14px;border-radius:8px;background:#FBF8F1;border:1.5px solid #E4DFD5;font-size:14px;color:#374151;line-height:1.55;white-space:pre-line;">${esc(s.suggestedRewrite)}</div>
-        </div>` : ''}
-        <div class="col gap-6">
-          <span class="field-label">Communication Persona</span>
-          <div class="col gap-4">${personaRows}</div>
+          <span class="field-label">Your Improved Message</span>
+          <div class="bubble-row"><div class="bubble bubble-improved bubble-tail-left type-b2" style="white-space:pre-line;">${esc(s.suggestedRewrite)}</div></div>
         </div>
         <div class="col gap-10 divider-top">
           <span class="field-label">My Learning</span>
-          <div class="col gap-4"><span style="font-size:12px;font-weight:600;color:#6B7280;">What I learned about verbal communication</span><span style="font-size:14px;color:#374151;line-height:1.5;">${esc(s.learnVerbal)}</span></div>
-          <div class="col gap-4"><span style="font-size:12px;font-weight:600;color:#6B7280;">What I learned about non-verbal communication</span><span style="font-size:14px;color:#374151;line-height:1.5;">${esc(s.learnNonverbal)}</span></div>
-          <div class="col gap-4"><span style="font-size:12px;font-weight:600;color:#6B7280;">What I will do differently in future business communication</span><span style="font-size:14px;color:#374151;line-height:1.5;">${esc(s.learnFuture)}</span></div>
+          <div class="col gap-4"><span class="type-c1" style="color:var(--color-gray-600);">What I learned about verbal communication</span><span class="type-b2" style="color:var(--color-text);">${esc(s.learnVerbal)}</span></div>
+          <div class="col gap-4"><span class="type-c1" style="color:var(--color-gray-600);">What I learned about non-verbal communication</span><span class="type-b2" style="color:var(--color-text);">${esc(s.learnNonverbal)}</span></div>
+          <div class="col gap-4"><span class="type-c1" style="color:var(--color-gray-600);">What I will do differently in future business communication</span><span class="type-b2" style="color:var(--color-text);">${esc(s.learnFuture)}</span></div>
         </div>
       </div>
     </div>
     <div class="row between align-center wrap gap-10" style="padding:6px 2px;">
       <button class="btn btn-ghost" type="button" data-action="editReflections">BACK TO EDIT</button>
-      <div class="row gap-10 align-center">
-        <button class="btn btn-secondary" type="button" data-action="downloadPersona">DOWNLOAD PERSONA (.MD)</button>
+      <div class="row gap-10 align-center wrap">
+        ${s.cardDownloadNote ? `<span class="type-c2" style="color:var(--color-gray-600);">${esc(s.cardDownloadNote)}</span>` : ''}
+        <button class="btn btn-secondary" type="button" ${s.cardDownloadLoading ? 'disabled' : ''} data-action="downloadCardPng">${s.cardDownloadLoading ? 'PREPARING…' : 'DOWNLOAD CARD (.PNG)'}</button>
         <button class="btn btn-secondary" type="button" data-action="resetActivity">START NEW ACTIVITY</button>
       </div>
     </div>`;
@@ -1060,7 +1112,7 @@ function step8HTML(s, v) {
 
 function screenHTML(s, v) {
   switch (s.screen) {
-    case 0: return introHTML(s);
+    case 0: return introHTML(s, v);
     case 1: return step1HTML(v);
     case 2: return step2HTML(v);
     case 3: return step3HTML(v);
@@ -1068,7 +1120,6 @@ function screenHTML(s, v) {
     case 5: return step5HTML(s, v);
     case 6: return step6HTML(s, v);
     case 7: return step7HTML(s, v);
-    case 8: return step8HTML(s, v);
     default: return '';
   }
 }
@@ -1122,7 +1173,9 @@ function setDisabled(id, disabled) {
 function bindTextFieldsForScreen(v) {
   switch (state.screen) {
     case 0:
-      bindTextField('studentName', 'studentName');
+      bindTextField('studentName', 'studentName', () => {
+        setDisabled('start-btn', !state.studentName.trim());
+      });
       break;
     case 2: {
       const refreshStep2 = () => {
@@ -1148,14 +1201,7 @@ function bindTextFieldsForScreen(v) {
       });
       break;
     }
-    case 6:
-      bindTextField('improvedMessage', 'improvedMessage', () => {
-        const improvedCheck = isCoherentText(state.improvedMessage, 4);
-        setWarning('improvedMessageWarning', improvedCheck.reason);
-        setDisabled('step6-next-btn', !improvedCheck.ok);
-      });
-      break;
-    case 8:
+    case 7:
       if (!state.cardCreated) {
         const refreshCard = () => {
           const lv = isCoherentText(state.learnVerbal, 3);
@@ -1191,8 +1237,8 @@ appEl.addEventListener('click', (e) => {
     case 'pickNonverbal': pickNonverbal(el.dataset.cat, el.dataset.opt); break;
     case 'runAnalysis': runAnalysis(); break;
     case 'generateSuggestion': generateSuggestion(); break;
-    case 'downloadPersona': downloadPersona(); break;
     case 'createCard': createCard(); break;
+    case 'downloadCardPng': downloadCardPng(); break;
     case 'editReflections': editReflections(); break;
     default: break;
   }
