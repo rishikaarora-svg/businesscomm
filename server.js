@@ -1,18 +1,31 @@
 /*
- * Tiny static file server + AI backend for the Stride communication activity.
+ * Tiny static file server + local-dev entry point for the Stride
+ * communication activity.
  *
  * No npm dependencies on purpose (Node 18+ ships a global `fetch`, and plain
  * `http` is enough for a classroom app): `node server.js` and you're done.
  *
- * Two endpoints call the Google AI (Gemini) API server-side, so the API key
- * never ships to the browser:
- *   POST /api/analyze  -> the "AI Communication Check" (step 5)
- *   POST /api/rewrite  -> the "Suggested Rewrite" (step 7)
+ * The actual API logic (Gemini calls, SlopTotal proxy) lives in
+ * lib/backend.js, transport-agnostic — this file is just the thinnest
+ * possible adapter from `http.ServerResponse` onto it. The same backend
+ * logic is also used by api/*.js, Vercel's serverless-function versions of
+ * these same three routes, used when this project is deployed to Vercel
+ * instead of run locally — see README.md ("Deploying (Vercel)").
  *
- * Both require GOOGLE_API_KEY to be set (env var, or a .env file next to
- * this script). If it's missing, or the API call fails for any reason, the
- * client-side rule-based fallback in app.js takes over automatically — see
- * README.md.
+ * Three endpoints:
+ *   POST /api/analyze        -> the "AI Communication Check" (step 5), calls
+ *                                Google AI (Gemini) server-side
+ *   POST /api/rewrite        -> the "Suggested Rewrite" (step 7), same
+ *   POST /api/writing-check  -> optional AI-writing nudge before the final
+ *                                card, proxies to a separately-run SlopTotal
+ *                                instance on localhost:8000 (see README.md)
+ *
+ * The Gemini endpoints require GOOGLE_API_KEY to be set (env var, or a .env
+ * file next to this script). If it's missing, or the API call fails for any
+ * reason, the client-side rule-based fallback in app.js takes over
+ * automatically. /api/writing-check degrades the same way: if SlopTotal
+ * isn't running, it returns { skip: true } rather than an error, and app.js
+ * just proceeds without the nudge — see README.md.
  */
 
 const http = require('http');
@@ -21,10 +34,9 @@ const path = require('path');
 
 loadDotEnv();
 
+const backend = require('./lib/backend');
+
 const PORT = process.env.PORT || 8080;
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY || '';
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
-const GEMINI_URL = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
 const STATIC_FILES = {
   '/': 'index.html',
@@ -113,179 +125,20 @@ function sendJson(res, status, body) {
   res.end(data);
 }
 
-// Strips ```json ... ``` fences if the model wraps its output despite being
-// told not to; with responseMimeType 'application/json' Gemini shouldn't,
-// but this keeps parsing robust.
-function extractJson(text) {
-  const trimmed = text.trim();
-  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
-  return fenced ? fenced[1] : trimmed;
-}
-
-// Despite responseMimeType 'application/json' and explicit instructions,
-// this model sometimes emits JS-object-literal keys instead of JSON's
-// required double-quoted keys (`label: "x"` instead of `"label": "x"`).
-// This walks the text respecting string boundaries (so it only touches
-// structural key positions, never text *inside* a string value) and quotes
-// any bare identifier immediately followed by a colon.
-function quoteUnquotedKeys(text) {
-  let result = '';
-  let i = 0;
-  const n = text.length;
-  while (i < n) {
-    if (text[i] === '"') {
-      let j = i + 1;
-      while (j < n) {
-        if (text[j] === '\\') { j += 2; continue; }
-        if (text[j] === '"') { j++; break; }
-        j++;
-      }
-      result += text.slice(i, j);
-      i = j;
-    } else {
-      let j = text.indexOf('"', i);
-      if (j === -1) j = n;
-      result += text.slice(i, j).replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3');
-      i = j;
-    }
-  }
-  return result;
-}
-
-function parseModelJson(text) {
-  const candidate = extractJson(text);
-  try {
-    return JSON.parse(candidate);
-  } catch (e) {
-    return JSON.parse(quoteUnquotedKeys(candidate));
-  }
-}
-
-async function callGemini(system, userPrompt, maxTokens) {
-  if (!GOOGLE_API_KEY) {
-    const err = new Error('GOOGLE_API_KEY is not set');
-    err.code = 'NO_API_KEY';
-    throw err;
-  }
-  const response = await fetch(`${GEMINI_URL(GEMINI_MODEL)}?key=${encodeURIComponent(GOOGLE_API_KEY)}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: system }] },
-      contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-      // thinkingBudget: 0 disables this model's hidden reasoning pass — left
-      // on, it silently burns most of maxOutputTokens on reasoning tokens
-      // that never appear in `parts`, truncating the actual JSON answer.
-      generationConfig: { responseMimeType: 'application/json', maxOutputTokens: maxTokens, thinkingConfig: { thinkingBudget: 0 } }
-    })
-  });
-  if (!response.ok) {
-    const bodyText = await response.text().catch(() => '');
-    throw new Error(`Google AI API error ${response.status}: ${bodyText.slice(0, 300)}`);
-  }
-  const data = await response.json();
-  const candidate = (data.candidates || [])[0];
-  const parts = (candidate && candidate.content && candidate.content.parts) || [];
-  // Concatenate every text part rather than assuming parts[0] holds the
-  // whole answer — Gemini sometimes splits a single response across parts.
-  const text = parts.map((p) => p.text || '').join('');
-  if (!text) {
-    const reason = (candidate && candidate.finishReason) || (data.promptFeedback && data.promptFeedback.blockReason) || 'no content';
-    throw new Error(`Google AI API returned no text content (${reason})`);
-  }
-  return parseModelJson(text);
-}
-
-const ANALYZE_SYSTEM = `You are a business-communication coach for BBA students at Stride School of Business.
-You will be given a workplace scenario and a student's message plus the tone of voice and body language they chose to go with it.
-
-Analyze it and respond with ONLY a valid JSON array (no markdown fences, no commentary before or after) of exactly 6 objects, in this exact order, each shaped {"label": string, "text": string}, with these exact labels:
-"Professionalism", "Clarity", "Tone", "Verbal Communication", "Non-Verbal Communication", "Possible Receiver Reaction".
-
-Rules for the "text" of each section:
-- 2-4 sentences, written directly to the student ("you"/"your").
-- Ground it in the student's actual wording — quote or paraphrase a specific short phrase from their message where it helps.
-- Be constructive and specific to this scenario, never a generic template, and never give a numeric score.
-- For "Non-Verbal Communication", reference the specific body-language choices provided and explicitly say which ones help or hurt in this scenario, using the given ideal/caution/avoid ratings as ground truth (don't contradict them, but you can explain the "why" in your own words).
-- For "Possible Receiver Reaction", predict concretely how the specific person described (their role, and what's at stake for them) would realistically react to this exact message, referencing the stated goal.`;
-
-const REWRITE_SYSTEM = `You are a business-communication coach for BBA students at Stride School of Business.
-You will be given a workplace scenario and a student's message.
-
-Respond with ONLY a valid JSON object (no markdown fences, no commentary) shaped {"text": string, "rationale": string}:
-- "text": a polished rewrite of the student's message, written in first person as something they could actually say, that fits this scenario's audience and goal, fixes any professionalism/clarity/tone problems, and stays reasonably close to the student's own length and voice rather than becoming generic corporate-speak.
-- "rationale": 2-4 sentences, written directly to the student ("you"/"your"), explaining the specific changes you made and why they fit this scenario.`;
-
-function buildAnalyzePrompt(body) {
-  const s = body.situation || {};
-  const nv = Array.isArray(body.nonverbal) ? body.nonverbal : [];
-  const nvLines = nv.map((n) => `- ${n.category}: "${n.choice}" (rated ${n.level} for this scenario)`).join('\n') || '(none selected)';
-  return `SCENARIO
-Title: ${s.title || ''}
-Context: ${s.context || ''}
-Audience: ${s.audience || ''}
-Student's goal: ${s.goal || ''}
-
-STUDENT'S MESSAGE
-"${body.verbalMessage || ''}"
-
-STUDENT'S SELF-DESCRIPTION OF THEIR OWN DELIVERY
-Tone: ${body.tone || ''}
-Word choice: ${body.wordChoice || ''}
-Clarity: ${body.clarity || ''}
-
-NON-VERBAL CHOICES (rating is pre-computed ground truth for this scenario)
-${nvLines}
-
-STUDENT'S OWN PREDICTION OF HOW THE RECEIVER WILL REACT
-"${body.receiverGuess || ''}"
-
-Now produce the JSON array described in your instructions.`;
-}
-
-function buildRewritePrompt(body) {
-  const s = body.situation || {};
-  return `SCENARIO
-Title: ${s.title || ''}
-Context: ${s.context || ''}
-Audience: ${s.audience || ''}
-Student's goal: ${s.goal || ''}
-
-STUDENT'S MESSAGE
-"${body.verbalMessage || ''}"
-
-Now produce the JSON object described in your instructions.`;
-}
-
-async function handleAnalyze(req, res) {
+async function handleApiRoute(handler, req, res) {
   try {
     const body = await readJsonBody(req);
-    if (!body.verbalMessage || !body.situation) return sendJson(res, 400, { error: 'Missing situation or verbalMessage' });
-    const sections = await callGemini(ANALYZE_SYSTEM, buildAnalyzePrompt(body), 1200);
-    if (!Array.isArray(sections) || !sections.length) throw new Error('Unexpected AI response shape');
-    sendJson(res, 200, sections);
+    const result = await handler(body);
+    sendJson(res, result.status, result.body);
   } catch (e) {
-    const status = e.code === 'NO_API_KEY' ? 503 : 502;
-    sendJson(res, status, { error: e.message });
-  }
-}
-
-async function handleRewrite(req, res) {
-  try {
-    const body = await readJsonBody(req);
-    if (!body.situation) return sendJson(res, 400, { error: 'Missing situation' });
-    const result = await callGemini(REWRITE_SYSTEM, buildRewritePrompt(body), 700);
-    if (!result || typeof result.text !== 'string') throw new Error('Unexpected AI response shape');
-    sendJson(res, 200, result);
-  } catch (e) {
-    const status = e.code === 'NO_API_KEY' ? 503 : 502;
-    sendJson(res, status, { error: e.message });
+    sendJson(res, 400, { error: e.message || 'Invalid request' });
   }
 }
 
 const server = http.createServer((req, res) => {
-  if (req.method === 'POST' && req.url === '/api/analyze') return handleAnalyze(req, res);
-  if (req.method === 'POST' && req.url === '/api/rewrite') return handleRewrite(req, res);
+  if (req.method === 'POST' && req.url === '/api/analyze') return handleApiRoute(backend.analyzeHandler, req, res);
+  if (req.method === 'POST' && req.url === '/api/rewrite') return handleApiRoute(backend.rewriteHandler, req, res);
+  if (req.method === 'POST' && req.url === '/api/writing-check') return handleApiRoute(backend.writingCheckHandler, req, res);
   if (req.method === 'GET') return serveStatic(req, res);
   res.writeHead(405, { 'Content-Type': 'text/plain' });
   res.end('Method not allowed');
@@ -293,9 +146,22 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Stride communication activity running at http://localhost:${PORT}`);
-  if (!GOOGLE_API_KEY) {
+  if (!backend.getGoogleApiKey()) {
     console.log('GOOGLE_API_KEY is not set — the AI check/rewrite will fall back to the built-in rule-based logic. See README.md.');
   } else {
-    console.log(`Live AI calls enabled (model: ${GEMINI_MODEL}).`);
+    console.log(`Live AI calls enabled (model: ${backend.getGeminiModel()}).`);
   }
+  // Fire-and-forget: just a startup hint, never blocks the server or the
+  // activity — the per-request fallback in writingCheckHandler is what
+  // actually matters.
+  const sloptotalUrl = backend.getSloptotalUrl();
+  fetch(`${sloptotalUrl}/api/engines`, { signal: AbortSignal.timeout(1500) })
+    .then((r) => {
+      console.log(r.ok
+        ? `SlopTotal writing check found at ${sloptotalUrl} — the optional writing-check nudge is enabled.`
+        : `SlopTotal at ${sloptotalUrl} responded but looked unhealthy — the writing-check nudge will be skipped until it's up.`);
+    })
+    .catch(() => {
+      console.log(`SlopTotal not found at ${sloptotalUrl} — the optional writing-check nudge will be silently skipped. See README.md to run it.`);
+    });
 });

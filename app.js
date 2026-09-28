@@ -495,6 +495,21 @@ async function fetchAiRewrite(state, situation) {
   return result;
 }
 
+// Optional AI-writing nudge, powered by a separately-run SlopTotal instance
+// (see README.md) — a pedagogical nudge, never a gate. /api/writing-check
+// always resolves 200 (never throws on "service not running"), but this
+// still wraps the call in try/catch as a second layer: if anything about
+// this request goes wrong for any reason, the caller must be able to treat
+// it as "skip the check" and just proceed, exactly like a normal skip.
+async function fetchWritingCheck(text) {
+  try {
+    const result = await postJson('/api/writing-check', { text });
+    return result && typeof result === 'object' ? result : { skip: true };
+  } catch (e) {
+    return { skip: true };
+  }
+}
+
 // ============================================================
 // STATE
 // ============================================================
@@ -527,6 +542,8 @@ function initialState() {
     suggestionRationale: '',
     cardDownloadLoading: false,
     cardDownloadNote: '',
+    writingCheckLoading: false,
+    writingCheckNudge: false,
     scenarioHistory: loadScenarioHistory()
   };
 }
@@ -596,12 +613,46 @@ async function generateSuggestion() {
   }
 }
 
-function createCard() {
+function finalizeCard() {
   const updatedHistory = state.scenarioHistory.slice();
   if (state.situationId) updatedHistory.push(state.situationId);
   saveScenarioHistory(updatedHistory);
-  setState({ cardCreated: true, scenarioHistory: updatedHistory });
+  setState({ cardCreated: true, scenarioHistory: updatedHistory, writingCheckLoading: false, writingCheckNudge: false });
 }
+
+// Runs the optional AI-writing nudge (see README.md — SlopTotal, a separate
+// local service) on the student's own reflection writing before the card is
+// finalized. Combines verbalMessage + receiverGuess + the three learning
+// reflections — all fields the student actually typed themselves — into one
+// block, since the detector is documented as unreliable under ~80 words and
+// any single field here is usually shorter than that.
+//
+// This never blocks card creation: a "skip" response (service not running,
+// network error, ambiguous result) or a low-confidence/mixed verdict both
+// proceed straight to finalizeCard(). Only a high-confidence "ai" verdict
+// pauses to show a dismissible nudge — the student can still continue as-is.
+async function createCard() {
+  const combinedText = [
+    state.verbalMessage,
+    state.receiverGuess,
+    state.learnVerbal,
+    state.learnNonverbal,
+    state.learnFuture
+  ].join(' ');
+
+  setState({ writingCheckLoading: true });
+  const result = await fetchWritingCheck(combinedText);
+  const shouldNudge = !result.skip && result.confidence === 'high' && result.verdict === 'ai';
+
+  if (shouldNudge) {
+    setState({ writingCheckLoading: false, writingCheckNudge: true });
+    return;
+  }
+  finalizeCard();
+}
+
+function continueAnyway() { finalizeCard(); }
+function reviseWriting() { setState({ writingCheckNudge: false }); }
 
 function editReflections() { setState({ cardCreated: false }); }
 
@@ -1037,10 +1088,18 @@ function step7HTML(s, v) {
           <textarea id="learnFuture" class="textarea" rows="3" placeholder="Write your reflection..."></textarea>
           <span id="learnFutureWarning" class="warning-text ${v.learnFutureCheck.reason ? '' : 'hidden'}">${esc(v.learnFutureCheck.reason)}</span>
         </div>
+        ${s.writingCheckNudge ? `
+        <div class="card col gap-14" style="padding:18px;">
+          <span class="warning-text">Your writing here reads a bit more polished/formal than we'd expect for a personal reflection — want to revise a section in your own words before finishing? You can also continue as-is.</span>
+          <div class="row gap-10">
+            <button class="btn btn-secondary" type="button" data-action="reviseWriting">Go back and revise</button>
+            <button class="btn btn-primary" type="button" data-action="continueAnyway">Continue anyway</button>
+          </div>
+        </div>` : `
         <div class="row between align-center divider-top">
           <button class="btn btn-ghost" type="button" data-action="goBack">BACK</button>
-          <button id="card-btn" class="btn btn-primary" type="button" ${v.canCard ? '' : 'disabled'} data-action="createCard">CREATE MY FINAL CARD</button>
-        </div>
+          <button id="card-btn" class="btn btn-primary" type="button" ${(v.canCard && !s.writingCheckLoading) ? '' : 'disabled'} data-action="createCard">${s.writingCheckLoading ? 'CHECKING…' : 'CREATE MY FINAL CARD'}</button>
+        </div>`}
       </div>`;
   }
 
@@ -1210,7 +1269,7 @@ function bindTextFieldsForScreen(v) {
           setWarning('learnVerbalWarning', lv.reason);
           setWarning('learnNonverbalWarning', lnv.reason);
           setWarning('learnFutureWarning', lf.reason);
-          setDisabled('card-btn', !(lv.ok && lnv.ok && lf.ok));
+          setDisabled('card-btn', !(lv.ok && lnv.ok && lf.ok) || state.writingCheckLoading);
         };
         bindTextField('learnVerbal', 'learnVerbal', refreshCard);
         bindTextField('learnNonverbal', 'learnNonverbal', refreshCard);
@@ -1238,6 +1297,8 @@ appEl.addEventListener('click', (e) => {
     case 'runAnalysis': runAnalysis(); break;
     case 'generateSuggestion': generateSuggestion(); break;
     case 'createCard': createCard(); break;
+    case 'continueAnyway': continueAnyway(); break;
+    case 'reviseWriting': reviseWriting(); break;
     case 'downloadCardPng': downloadCardPng(); break;
     case 'editReflections': editReflections(); break;
     default: break;

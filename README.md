@@ -18,10 +18,18 @@ server at all, just with rule-based feedback instead of live AI.
 - `index.html` — the page shell. Loads fonts, `styles.css`, `app.js`.
 - `styles.css` — all styling (same visual design as the original artifact:
   warm cream background, navy/rust accent colors).
-- `server.js` — static file server + the `/api/analyze` and `/api/rewrite`
-  endpoints that call the Google AI (Gemini) API server-side. Zero npm
-  dependencies (Node 18+'s built-in `fetch`). See "Running it" and "The live
-  AI call".
+- `server.js` — local-dev static file server + thin adapter onto
+  `lib/backend.js` for the three `/api/*` routes. Zero npm dependencies
+  (Node 18+'s built-in `fetch`). See "Running it" and "The live AI call".
+- `lib/backend.js` — the actual `/api/analyze`, `/api/rewrite`, and
+  `/api/writing-check` logic (Gemini calls, SlopTotal proxy), written
+  transport-agnostic (plain object in, `{status, body}` out) so it's shared
+  identically between `server.js` (local dev) and `api/*.js` (Vercel). See
+  "Deploying (Vercel)".
+- `api/analyze.js`, `api/rewrite.js`, `api/writing-check.js` — Vercel
+  serverless-function versions of the same three routes, each a thin
+  adapter onto `lib/backend.js`. Only relevant when deployed to Vercel; not
+  used by `node server.js`.
 - `.env.example` — copy to `.env` and set `GOOGLE_API_KEY` to enable live
   AI (never commit the real `.env` — it's gitignored).
 - `app.js` — everything else. It's one file on purpose (easy to read top to
@@ -90,6 +98,43 @@ doesn't have access to that exact model name, check
 [Google AI Studio](https://aistudio.google.com/) for the model id available
 to you and set `GEMINI_MODEL` accordingly).
 
+## Deploying (Vercel)
+
+`server.js` is a plain `http.createServer` — Vercel does not run that as a
+persistent process. Deployed there, only the static files (`index.html`,
+`app.js`, `styles.css`, the logos) would be served automatically; every
+`/api/*` call would 404, and both AI steps would silently fall back to the
+rule-based logic with no visible error. That's exactly what "live AI isn't
+working on Vercel" looks like if you hit this.
+
+The fix already in this repo: the actual API logic lives in
+`lib/backend.js`, transport-agnostic (it takes a plain JS object in, returns
+`{ status, body }`, and knows nothing about `http.ServerResponse` or
+Vercel's `res`). Two thin adapters call into it:
+- `server.js` — for local dev, unchanged from your point of view (`node
+  server.js`).
+- `api/analyze.js`, `api/rewrite.js`, `api/writing-check.js` — one file per
+  route, Vercel's file-based convention for Node.js serverless functions.
+  Vercel auto-detects the `api/` folder and serves everything else (the
+  static files) as-is; no `vercel.json` needed for this project's shape.
+
+**What you still need to do on Vercel's end** (this repo can't do it for
+you — it's account-specific configuration, not code):
+
+1. In the Vercel project's **Settings → Environment Variables**, add
+   `GOOGLE_API_KEY` (same value as your local `.env`). Optionally
+   `GEMINI_MODEL` too if you're overriding the default.
+2. Redeploy after adding it — Vercel only injects env vars set *before* a
+   build/deploy, not retroactively into an already-running deployment.
+3. Do **not** set `SLOPTOTAL_URL` to anything on Vercel unless you've
+   separately deployed SlopTotal somewhere publicly reachable (its own
+   heavy CPU/model-loading needs don't fit a serverless function's
+   time/memory limits anyway — see the next section). Left unset,
+   `/api/writing-check` on Vercel will always resolve to `{ skip: true }`,
+   silently and correctly — the writing-check nudge is a local-classroom-
+   server feature by design, not something meant to run on the public
+   deployment.
+
 ## Where this came from, and what changed
 
 This was originally built as a Claude "Design" canvas Artifact — a
@@ -140,7 +185,8 @@ memory:
 ## The live AI call
 
 The "AI Communication Check" (step 5) and "Suggested Rewrite" (step 6) call
-a real Google AI (Gemini) model through `server.js`:
+a real Google AI (Gemini) model through `lib/backend.js` (used by both
+`server.js` locally and `api/*.js` on Vercel):
 
 - `POST /api/analyze` takes `{ situation, verbalMessage, tone, wordChoice, clarity, nonverbal, receiverGuess }`
   and returns the same shape the old rule-based `buildFullAnalysis()` did
@@ -163,7 +209,7 @@ a real Google AI (Gemini) model through `server.js`:
   activity never breaks or blocks a student. `state.analysisSource` /
   `state.suggestionSource` (`'ai'` or `'fallback'`) drive the small
   "AI-GENERATED" / "RULE-BASED (OFFLINE)" badge next to each result.
-- The prompts (`ANALYZE_SYSTEM` / `REWRITE_SYSTEM` in `server.js`) ask for
+- The prompts (`ANALYZE_SYSTEM` / `REWRITE_SYSTEM` in `lib/backend.js`) ask for
   strict JSON back and validate the shape before returning it to the
   client; malformed or missing output is treated as a failure and triggers
   the same fallback path.
@@ -172,6 +218,78 @@ If you want suggestions to stay recognizably in a given student's voice over
 time, the next step is storing a short profile of their past messages per
 student (see "Per-student, cross-device history" above) and feeding it into
 the `/api/rewrite` prompt.
+
+## The optional AI-writing check (SlopTotal)
+
+Before finalizing the card (step 7, `createCard()` in `app.js`), the activity
+can optionally run the student's own writing through
+[SlopTotal](https://github.com/pablocaeg/sloptotal), a self-hosted,
+open-source AI-text detector (23 local CPU engines, no API key, nothing sent
+to a third party). This is **a pedagogical nudge, not a plagiarism gate**:
+
+- It combines `verbalMessage`, `receiverGuess`, `learnVerbal`,
+  `learnNonverbal`, and `learnFuture` — every field the student typed in
+  their own words — into one block before checking, since SlopTotal's own
+  docs say results are unreliable under ~80 words and any single field here
+  is usually shorter than that.
+- It only shows a nudge when SlopTotal returns **both** `confidence: "high"`
+  **and** `verdict: "ai"`. A `"mixed"` verdict, or `"ai"`/`"human"` at `"low"`
+  confidence, is treated as inconclusive and never shown — those are exactly
+  the cases most likely to be false positives, including for non-native
+  English writers.
+- The nudge never blocks anything: the student can dismiss it and revise, or
+  click "Continue anyway" and finish normally.
+- If SlopTotal isn't running, is unreachable, times out, or returns anything
+  unexpected, the check is silently skipped and the card is created as if
+  the feature didn't exist — see `writingCheckHandler()` in `lib/backend.js`.
+
+**Note on one deviation from a first draft of this feature:** an earlier
+plan for the combined text also included a field called `improvedMessage` —
+that field doesn't exist in this codebase (the "Improve Your Message" step it
+belonged to was removed earlier; see "Where this came from, and what
+changed"). It's intentionally left out here rather than substituted with
+`suggestedRewrite`, which is the *AI's own* rewrite, not the student's
+writing — checking AI-generated text for "is this AI-generated" would
+trivially flag it almost every time and defeat the point of the feature.
+
+### Running SlopTotal
+
+SlopTotal is a **separate Python/FastAPI service** — it does not run inside
+`server.js` or share its process. Clone it as a sibling folder and start it
+on port 8000 before using this feature; if it's not running, everything
+above just degrades gracefully and the nudge never appears.
+
+```bash
+git clone https://github.com/pablocaeg/sloptotal.git
+cd sloptotal
+python3.11 -m venv venv && source venv/bin/activate   # needs Python 3.10+
+pip install -r requirements.txt
+cp .env.example .env
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+A few things worth knowing if you're setting this up yourself:
+
+- **Python 3.10+ is a hard requirement, not just a recommendation** — the
+  README says macOS's system Python 3.9 is "too old," and that's literal:
+  `app/autoconfig.py` uses `str | None` union-type syntax at module scope,
+  which raises `TypeError: unsupported operand type(s) for |` on 3.9. If you
+  don't have Homebrew/pyenv handy, a fully self-contained interpreter (no
+  system-wide install, no sudo) works too — e.g. a prebuilt CPython from
+  [astral-sh/python-build-standalone](https://github.com/astral-sh/python-build-standalone/releases)
+  (grab the `aarch64-apple-darwin-install_only_stripped` asset for Apple
+  Silicon, or the matching `x86_64` one for Intel Macs), extracted anywhere,
+  then `/path/to/extracted/python/bin/python3.11 -m venv venv` in place of
+  the first line above.
+- First run downloads the HuggingFace model weights it needs (~2 GB) into
+  `sloptotal/models/` (`HF_HOME` in `.env`) — this can take a few minutes
+  and needs network access.
+- `server.js` proxies to `http://localhost:8000` by default; if you run
+  SlopTotal on a different host/port, set `SLOPTOTAL_URL` in this project's
+  `.env` to match.
+- On startup, `server.js` logs whether it found SlopTotal at that URL — this
+  is only a heads-up for whoever's running the classroom server, not
+  something the activity depends on to function.
 
 ## Extending the scenario library
 
