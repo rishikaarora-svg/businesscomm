@@ -16,16 +16,17 @@
  *   POST /api/analyze        -> the "AI Communication Check" (step 5), calls
  *                                Google AI (Gemini) server-side
  *   POST /api/rewrite        -> the "Suggested Rewrite" (step 7), same
- *   POST /api/writing-check  -> optional AI-writing nudge before the final
- *                                card, proxies to a separately-run SlopTotal
- *                                instance on localhost:8000 (see README.md)
+ *   POST /api/writing-check  -> optional AI-writing check when a student
+ *                                tries to leave step 2, proxies to a
+ *                                separately-run SlopTotal instance on
+ *                                localhost:8000 (see README.md)
  *
  * The Gemini endpoints require GOOGLE_API_KEY to be set (env var, or a .env
  * file next to this script). If it's missing, or the API call fails for any
  * reason, the client-side rule-based fallback in app.js takes over
  * automatically. /api/writing-check degrades the same way: if SlopTotal
  * isn't running, it returns { skip: true } rather than an error, and app.js
- * just proceeds without the nudge — see README.md.
+ * just lets the student advance — see README.md.
  */
 
 const http = require('http');
@@ -158,10 +159,10 @@ server.listen(PORT, () => {
   fetch(`${sloptotalUrl}/api/engines`, { signal: AbortSignal.timeout(1500) })
     .then((r) => {
       console.log(r.ok
-        ? `SlopTotal writing check found at ${sloptotalUrl} — the optional writing-check nudge is enabled.`
-        : `SlopTotal at ${sloptotalUrl} responded but looked unhealthy — the writing-check nudge will be skipped until it's up.`);
+        ? `SlopTotal writing check found at ${sloptotalUrl} — the optional writing check is enabled.`
+        : `SlopTotal at ${sloptotalUrl} responded but looked unhealthy — the writing check will be skipped until it's up.`);
     })
     .catch(() => {
-      console.log(`SlopTotal not found at ${sloptotalUrl} — the optional writing-check nudge will be silently skipped. See README.md to run it.`);
+      console.log(`SlopTotal not found at ${sloptotalUrl} — the optional writing check will be silently skipped. See README.md to run it.`);
     });
 });

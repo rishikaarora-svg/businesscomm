@@ -131,9 +131,8 @@ you — it's account-specific configuration, not code):
    heavy CPU/model-loading needs don't fit a serverless function's
    time/memory limits anyway — see the next section). Left unset,
    `/api/writing-check` on Vercel will always resolve to `{ skip: true }`,
-   silently and correctly — the writing-check nudge is a local-classroom-
-   server feature by design, not something meant to run on the public
-   deployment.
+   silently and correctly — the writing check is a local-classroom-server
+   feature by design, not something meant to run on the public deployment.
 
 ## Where this came from, and what changed
 
@@ -221,43 +220,37 @@ the `/api/rewrite` prompt.
 
 ## The optional AI-writing check (SlopTotal)
 
-Before finalizing the card (step 7, `createCard()` in `app.js`), the activity
-can optionally run the student's own writing through
+When a student tries to move on from step 2 ("Create Your Verbal Message"),
+the activity can optionally run their message through
 [SlopTotal](https://github.com/pablocaeg/sloptotal), a self-hosted,
 open-source AI-text detector (23 local CPU engines, no API key, nothing sent
-to a third party). This is **a pedagogical nudge, not a plagiarism gate**:
+to a third party). Unlike a typical plagiarism gate, this only ever blocks
+on a confident positive, and the only way past it is to actually rewrite the
+message — there is no "continue anyway":
 
-- It combines `verbalMessage`, `receiverGuess`, `learnVerbal`,
-  `learnNonverbal`, and `learnFuture` — every field the student typed in
-  their own words — into one block before checking, since SlopTotal's own
-  docs say results are unreliable under ~80 words and any single field here
-  is usually shorter than that.
-- It only shows a nudge when SlopTotal returns **both** `confidence: "high"`
-  **and** `verdict: "ai"`. A `"mixed"` verdict, or `"ai"`/`"human"` at `"low"`
-  confidence, is treated as inconclusive and never shown — those are exactly
-  the cases most likely to be false positives, including for non-native
-  English writers.
-- The nudge never blocks anything: the student can dismiss it and revise, or
-  click "Continue anyway" and finish normally.
+- Clicking NEXT on step 2 (`advanceStep2()` in `app.js`) sends just
+  `state.verbalMessage` — not a combined multi-field block — to
+  `POST /api/writing-check`, since this fires right after that one field is
+  written. The button shows "CHECKING…" and disables while the request is
+  in flight.
+- It only blocks the advance when SlopTotal returns **both**
+  `confidence: "high"` **and** `verdict: "ai"`, showing an inline message
+  under the textarea and keeping the student on step 2. A `"mixed"` verdict,
+  or `"ai"`/`"human"` at `"low"` confidence, is treated as inconclusive and
+  advances normally — those are exactly the cases most likely to be false
+  positives, including for non-native English writers.
+- The only way past a block is to edit the textarea and click NEXT again,
+  which runs a fresh check on the revised text.
 - If SlopTotal isn't running, is unreachable, times out, or returns anything
-  unexpected, the check is silently skipped and the card is created as if
+  unexpected, the check is silently skipped and the student advances as if
   the feature didn't exist — see `writingCheckHandler()` in `lib/backend.js`.
-
-**Note on one deviation from a first draft of this feature:** an earlier
-plan for the combined text also included a field called `improvedMessage` —
-that field doesn't exist in this codebase (the "Improve Your Message" step it
-belonged to was removed earlier; see "Where this came from, and what
-changed"). It's intentionally left out here rather than substituted with
-`suggestedRewrite`, which is the *AI's own* rewrite, not the student's
-writing — checking AI-generated text for "is this AI-generated" would
-trivially flag it almost every time and defeat the point of the feature.
 
 ### Running SlopTotal
 
 SlopTotal is a **separate Python/FastAPI service** — it does not run inside
 `server.js` or share its process. Clone it as a sibling folder and start it
 on port 8000 before using this feature; if it's not running, everything
-above just degrades gracefully and the nudge never appears.
+above just degrades gracefully and the check is silently skipped.
 
 ```bash
 git clone https://github.com/pablocaeg/sloptotal.git

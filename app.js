@@ -523,6 +523,8 @@ function initialState() {
     tone: '',
     wordChoice: '',
     clarity: '',
+    verbalCheckLoading: false,
+    verbalAiFlagged: false,
     nonverbal: { facial: null, eye: null, posture: null, gesture: null, voice: null, space: null },
     receiverGuess: '',
     analysisRun: false,
@@ -542,8 +544,6 @@ function initialState() {
     suggestionRationale: '',
     cardDownloadLoading: false,
     cardDownloadNote: '',
-    writingCheckLoading: false,
-    writingCheckNudge: false,
     scenarioHistory: loadScenarioHistory()
   };
 }
@@ -613,48 +613,38 @@ async function generateSuggestion() {
   }
 }
 
-function finalizeCard() {
+function createCard() {
   const updatedHistory = state.scenarioHistory.slice();
   if (state.situationId) updatedHistory.push(state.situationId);
   saveScenarioHistory(updatedHistory);
-  setState({ cardCreated: true, scenarioHistory: updatedHistory, writingCheckLoading: false, writingCheckNudge: false });
+  setState({ cardCreated: true, scenarioHistory: updatedHistory });
 }
-
-// Runs the optional AI-writing nudge (see README.md — SlopTotal, a separate
-// local service) on the student's own reflection writing before the card is
-// finalized. Combines verbalMessage + receiverGuess + the three learning
-// reflections — all fields the student actually typed themselves — into one
-// block, since the detector is documented as unreliable under ~80 words and
-// any single field here is usually shorter than that.
-//
-// This never blocks card creation: a "skip" response (service not running,
-// network error, ambiguous result) or a low-confidence/mixed verdict both
-// proceed straight to finalizeCard(). Only a high-confidence "ai" verdict
-// pauses to show a dismissible nudge — the student can still continue as-is.
-async function createCard() {
-  const combinedText = [
-    state.verbalMessage,
-    state.receiverGuess,
-    state.learnVerbal,
-    state.learnNonverbal,
-    state.learnFuture
-  ].join(' ');
-
-  setState({ writingCheckLoading: true });
-  const result = await fetchWritingCheck(combinedText);
-  const shouldNudge = !result.skip && result.confidence === 'high' && result.verdict === 'ai';
-
-  if (shouldNudge) {
-    setState({ writingCheckLoading: false, writingCheckNudge: true });
-    return;
-  }
-  finalizeCard();
-}
-
-function continueAnyway() { finalizeCard(); }
-function reviseWriting() { setState({ writingCheckNudge: false }); }
 
 function editReflections() { setState({ cardCreated: false }); }
+
+// Runs the optional AI-writing check (see README.md — SlopTotal, a separate
+// local service) on the student's own verbal message when they try to leave
+// step 2, checking only verbalMessage itself (not a combined multi-field
+// block) since this fires right after that one field is written.
+//
+// Unlike a dismissible nudge, this is a hard block: only a high-confidence
+// "ai" verdict stops the advance, and the only way past it is to actually
+// revise the textarea and click NEXT again to trigger a fresh check — no
+// "continue anyway" path. Anything else (skip: service not running, network
+// error, low confidence, a "mixed" or "human" verdict) advances normally,
+// exactly as if this check didn't exist.
+async function advanceStep2() {
+  setState({ verbalCheckLoading: true, verbalAiFlagged: false });
+  const result = await fetchWritingCheck(state.verbalMessage);
+  const isConfidentAi = !result.skip && result.confidence === 'high' && result.verdict === 'ai';
+
+  if (isConfidentAi) {
+    setState({ verbalCheckLoading: false, verbalAiFlagged: true });
+    return;
+  }
+  setState({ verbalCheckLoading: false, verbalAiFlagged: false });
+  goNext();
+}
 
 async function downloadCardPng() {
   const el = document.getElementById('finalCard');
@@ -893,7 +883,7 @@ function step1HTML(v) {
     </div>`;
 }
 
-function step2HTML(v) {
+function step2HTML(s, v) {
   return `
     <div class="card col gap-20" style="padding:30px;">
       <div class="col gap-6">
@@ -906,6 +896,10 @@ function step2HTML(v) {
         <label class="field-label" for="verbalMessage">Your message</label>
         <textarea id="verbalMessage" class="textarea" rows="5" placeholder="Type exactly what you would say..."></textarea>
         <span id="verbalMessageWarning" class="warning-text ${v.verbalCheck.reason ? '' : 'hidden'}">${esc(v.verbalCheck.reason)}</span>
+        ${s.verbalAiFlagged ? `
+        <div class="card col gap-6" style="padding:14px 16px;">
+          <span class="warning-text">This reads more like AI-generated text than your own writing — please rewrite your message in your own words before continuing.</span>
+        </div>` : ''}
       </div>
       <div class="grid-3">
         <div class="col gap-8">
@@ -923,7 +917,7 @@ function step2HTML(v) {
       </div>
       <div class="row between align-center divider-top">
         <button class="btn btn-ghost" type="button" data-action="goBack">BACK</button>
-        <button id="step2-next-btn" class="btn btn-primary" type="button" ${v.canStep2 ? '' : 'disabled'} data-action="goNext">NEXT</button>
+        <button id="step2-next-btn" class="btn btn-primary" type="button" ${(v.canStep2 && !s.verbalCheckLoading) ? '' : 'disabled'} data-action="advanceStep2">${s.verbalCheckLoading ? 'CHECKING…' : 'NEXT'}</button>
       </div>
     </div>`;
 }
@@ -1088,18 +1082,10 @@ function step7HTML(s, v) {
           <textarea id="learnFuture" class="textarea" rows="3" placeholder="Write your reflection..."></textarea>
           <span id="learnFutureWarning" class="warning-text ${v.learnFutureCheck.reason ? '' : 'hidden'}">${esc(v.learnFutureCheck.reason)}</span>
         </div>
-        ${s.writingCheckNudge ? `
-        <div class="card col gap-14" style="padding:18px;">
-          <span class="warning-text">Your writing here reads a bit more polished/formal than we'd expect for a personal reflection — want to revise a section in your own words before finishing? You can also continue as-is.</span>
-          <div class="row gap-10">
-            <button class="btn btn-secondary" type="button" data-action="reviseWriting">Go back and revise</button>
-            <button class="btn btn-primary" type="button" data-action="continueAnyway">Continue anyway</button>
-          </div>
-        </div>` : `
         <div class="row between align-center divider-top">
           <button class="btn btn-ghost" type="button" data-action="goBack">BACK</button>
-          <button id="card-btn" class="btn btn-primary" type="button" ${(v.canCard && !s.writingCheckLoading) ? '' : 'disabled'} data-action="createCard">${s.writingCheckLoading ? 'CHECKING…' : 'CREATE MY FINAL CARD'}</button>
-        </div>`}
+          <button id="card-btn" class="btn btn-primary" type="button" ${v.canCard ? '' : 'disabled'} data-action="createCard">CREATE MY FINAL CARD</button>
+        </div>
       </div>`;
   }
 
@@ -1173,7 +1159,7 @@ function screenHTML(s, v) {
   switch (s.screen) {
     case 0: return introHTML(s, v);
     case 1: return step1HTML(v);
-    case 2: return step2HTML(v);
+    case 2: return step2HTML(s, v);
     case 3: return step3HTML(v);
     case 4: return step4HTML(v);
     case 5: return step5HTML(s, v);
@@ -1241,7 +1227,7 @@ function bindTextFieldsForScreen(v) {
         const verbalCheck = isCoherentText(state.verbalMessage, 4);
         const canStep2 = verbalCheck.ok && state.tone.trim().length > 0 && state.wordChoice.trim().length > 0 && state.clarity.trim().length > 0;
         setWarning('verbalMessageWarning', verbalCheck.reason);
-        setDisabled('step2-next-btn', !canStep2);
+        setDisabled('step2-next-btn', !canStep2 || state.verbalCheckLoading);
       };
       bindTextField('verbalMessage', 'verbalMessage', refreshStep2);
       bindTextField('tone', 'tone', refreshStep2);
@@ -1269,7 +1255,7 @@ function bindTextFieldsForScreen(v) {
           setWarning('learnVerbalWarning', lv.reason);
           setWarning('learnNonverbalWarning', lnv.reason);
           setWarning('learnFutureWarning', lf.reason);
-          setDisabled('card-btn', !(lv.ok && lnv.ok && lf.ok) || state.writingCheckLoading);
+          setDisabled('card-btn', !(lv.ok && lnv.ok && lf.ok));
         };
         bindTextField('learnVerbal', 'learnVerbal', refreshCard);
         bindTextField('learnNonverbal', 'learnNonverbal', refreshCard);
@@ -1292,13 +1278,12 @@ appEl.addEventListener('click', (e) => {
     case 'startActivity': startActivity(); break;
     case 'goNext': goNext(); break;
     case 'goBack': goBack(); break;
+    case 'advanceStep2': advanceStep2(); break;
     case 'selectSituation': selectSituation(el.dataset.id); break;
     case 'pickNonverbal': pickNonverbal(el.dataset.cat, el.dataset.opt); break;
     case 'runAnalysis': runAnalysis(); break;
     case 'generateSuggestion': generateSuggestion(); break;
     case 'createCard': createCard(); break;
-    case 'continueAnyway': continueAnyway(); break;
-    case 'reviseWriting': reviseWriting(); break;
     case 'downloadCardPng': downloadCardPng(); break;
     case 'editReflections': editReflections(); break;
     default: break;
